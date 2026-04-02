@@ -13,6 +13,12 @@ dist-ssr
 *.local
 .env
 
+# Development scripts and test outputs
+generateImage.js
+error_details.txt
+error_output.txt
+response.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
