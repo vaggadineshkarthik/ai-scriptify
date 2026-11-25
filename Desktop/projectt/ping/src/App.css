@@ -11,7 +11,9 @@
   padding: 18px 22px;
   border: 1px solid var(--border);
   border-radius: 20px;
-  background: rgba(17, 17, 17, 0.92);
+  background:
+    linear-gradient(180deg, rgba(91, 21, 37, 0.38), rgba(22, 13, 16, 0.96)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 2px, transparent 2px 34px);
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
 }
@@ -65,7 +67,7 @@
 .empty-history {
   border: 1px solid var(--border);
   border-radius: 28px;
-  background: linear-gradient(180deg, rgba(22, 22, 22, 0.98), rgba(10, 10, 10, 0.94));
+  background: linear-gradient(180deg, rgba(32, 17, 21, 0.98), rgba(13, 9, 11, 0.96));
   box-shadow: var(--shadow);
 }
 
@@ -73,8 +75,11 @@
   padding: 38px;
   margin-bottom: 24px;
   background:
-    radial-gradient(circle at top right, rgba(240, 192, 64, 0.16), transparent 24%),
-    linear-gradient(180deg, rgba(22, 22, 22, 0.98), rgba(10, 10, 10, 0.94));
+    radial-gradient(ellipse at 18% -12%, rgba(240, 192, 64, 0.22), transparent 38%),
+    radial-gradient(ellipse at 86% -10%, rgba(179, 47, 64, 0.3), transparent 42%),
+    linear-gradient(180deg, rgba(55, 19, 29, 0.95), rgba(15, 9, 12, 0.98));
+  border-color: rgba(240, 192, 64, 0.3);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.46), inset 0 -3px 0 rgba(240, 192, 64, 0.18);
 }
 
 .eyebrow {
@@ -106,8 +111,8 @@
 .history-meta span {
   padding: 9px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(240, 192, 64, 0.16);
-  background: rgba(240, 192, 64, 0.08);
+  border: 1px solid rgba(240, 192, 64, 0.22);
+  background: rgba(91, 21, 37, 0.28);
   color: var(--text-strong);
   font-size: 0.84rem;
 }
@@ -184,7 +189,7 @@
 
 .field-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -313,8 +318,9 @@
   border-radius: 22px;
   border: 1px solid var(--border);
   background:
-    linear-gradient(rgba(240, 192, 64, 0.06), rgba(240, 192, 64, 0.01)),
-    #060606;
+    radial-gradient(ellipse at 50% 0%, rgba(240, 192, 64, 0.08), transparent 46%),
+    linear-gradient(rgba(91, 21, 37, 0.08), rgba(0, 0, 0, 0.2)),
+    #080607;
   padding: 28px;
   box-sizing: border-box;
 }

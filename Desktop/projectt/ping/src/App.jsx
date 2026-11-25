@@ -9,12 +9,38 @@ const GENRES = ['Drama', 'Comedy', 'Thriller', 'Sci-Fi', 'Romance', 'Horror']
 const TONES = ['Dark', 'Light', 'Neutral']
 const SCENE_OPTIONS = Array.from({ length: 10 }, (_, index) => index + 1)
 const STORAGE_KEY = 'ai-scriptify-history'
+const INDIAN_LANGUAGES = [
+  { name: 'English', code: 'en', locale: 'en-IN' },
+  { name: 'Assamese', code: 'as', locale: 'as-IN' },
+  { name: 'Bengali', code: 'bn', locale: 'bn-IN' },
+  { name: 'Bodo', code: 'brx', locale: 'brx-IN' },
+  { name: 'Dogri', code: 'doi', locale: 'doi-IN' },
+  { name: 'Gujarati', code: 'gu', locale: 'gu-IN' },
+  { name: 'Hindi', code: 'hi', locale: 'hi-IN' },
+  { name: 'Kannada', code: 'kn', locale: 'kn-IN' },
+  { name: 'Kashmiri', code: 'ks', locale: 'ks-IN' },
+  { name: 'Konkani', code: 'kok', locale: 'kok-IN' },
+  { name: 'Maithili', code: 'mai', locale: 'mai-IN' },
+  { name: 'Malayalam', code: 'ml', locale: 'ml-IN' },
+  { name: 'Manipuri', code: 'mni', locale: 'mni-IN' },
+  { name: 'Marathi', code: 'mr', locale: 'mr-IN' },
+  { name: 'Nepali', code: 'ne', locale: 'ne-IN' },
+  { name: 'Odia', code: 'or', locale: 'or-IN' },
+  { name: 'Punjabi', code: 'pa', locale: 'pa-IN' },
+  { name: 'Sanskrit', code: 'sa', locale: 'sa-IN' },
+  { name: 'Santali', code: 'sat', locale: 'sat-IN' },
+  { name: 'Sindhi', code: 'sd', locale: 'sd-IN' },
+  { name: 'Tamil', code: 'ta', locale: 'ta-IN' },
+  { name: 'Telugu', code: 'te', locale: 'te-IN' },
+  { name: 'Urdu', code: 'ur', locale: 'ur-IN' },
+]
 
 const initialForm = {
   idea: '',
   genres: ['Drama'],
   tone: 'Neutral',
   scenes: 3,
+  language: 'en',
 }
 
 function formatDate(timestamp) {
@@ -45,15 +71,18 @@ function hasGenre(genres, genre) {
   return normalizeGenres(genres).includes(genre)
 }
 
-function buildPrompt({ idea, genres, tone, scenes }) {
+function buildPrompt({ idea, genres, tone, scenes, language }) {
+  const outputLanguage = INDIAN_LANGUAGES.find((item) => item.code === language)?.name || 'English'
   return `Write a professional short screenplay based on the following details.
 
 Story idea: ${idea}
 Genres: ${formatGenres(genres)}
 Tone: ${tone}
 Number of scenes: ${scenes}
+Language: ${outputLanguage}
 
 Requirements:
+- Write the entire screenplay naturally in ${outputLanguage}. Preserve screenplay formatting cues such as FADE IN:, FADE OUT:, scene headings, character names, dialogue, and transitions.
 - Use standard screenplay formatting cues.
 - Start with FADE IN:
 - Include scene headings, action lines, character names, dialogue, and transitions when appropriate.
@@ -108,11 +137,12 @@ async function requestOpenRouter(messages, temperature) {
   return data
 }
 
-async function generateSceneDirections(script) {
+async function generateSceneDirections(script, language = 'en') {
+  const outputLanguage = INDIAN_LANGUAGES.find((item) => item.code === language)?.name || 'English'
   const data = await requestOpenRouter([
     {
       role: 'system',
-      content: 'You are a film director and location scout. Analyze the screenplay and return only valid JSON with this shape: {"scenes":[{"scene_heading":"exact screenplay scene heading","location_suggestion":"specific practical location suggestion with relevant atmosphere","camera_angles":["specific camera angle and movement tied to a story beat","another specific camera angle tied to a story beat"]}]}. Include one item for each screenplay scene, in screenplay order. Base every suggestion on the actual scene content. Do not include markdown or extra keys.',
+      content: `You are a film director and location scout. Analyze the screenplay and return only valid JSON with this shape: {"scenes":[{"scene_heading":"exact screenplay scene heading","location_suggestion":"specific practical location suggestion with relevant atmosphere","camera_angles":["specific camera angle and movement tied to a story beat","another specific camera angle tied to a story beat"]}]}. Include one item for each screenplay scene, in screenplay order. Base every suggestion on the actual scene content. Write scene_heading exactly as it appears in the screenplay and write location_suggestion and camera_angles naturally in ${outputLanguage}. Do not include markdown or extra keys.`,
     },
     { role: 'user', content: script },
   ], 0.6)
@@ -150,6 +180,23 @@ async function generateSceneDirections(script) {
 
     return scene
   })
+}
+
+async function translateScreenplay(script, language) {
+  const targetLanguage = INDIAN_LANGUAGES.find((item) => item.code === language)?.name || 'English'
+  const data = await requestOpenRouter([
+    {
+      role: 'system',
+      content: `You are a professional screenplay translator. Translate the screenplay naturally into ${targetLanguage}. Preserve screenplay formatting and structure, including FADE IN:, FADE OUT:, scene headings, character names, action lines, dialogue, and transitions. Keep the scene headings and screenplay cues recognizable, but translate their prose naturally. Return only the translated screenplay with no explanations or markdown.`,
+    },
+    { role: 'user', content: script },
+  ], 0.3)
+
+  const translated = data?.choices?.[0]?.message?.content?.trim()
+  if (!translated) {
+    throw new Error(`OpenRouter returned an empty ${targetLanguage} translation.`)
+  }
+  return translated
 }
 
 function downloadScriptPdf(title, script) {
@@ -198,7 +245,7 @@ function downloadScriptPdf(title, script) {
   pdf.save(`${title.toLowerCase().replace(/[^a-z0-9]+/gi, '-') || 'ai-scriptify-script'}.pdf`)
 }
 
-function SceneDirectionCard({ scene, index, direction }) {
+function SceneDirectionCard({ scene, index, direction, language = 'en' }) {
   const [audioLoading, setAudioLoading] = useState(false)
   const [audioError, setAudioError] = useState('')
   const [isPlaying, setIsPlaying] = useState(false)
@@ -224,12 +271,16 @@ function SceneDirectionCard({ scene, index, direction }) {
 
       const utterance = new SpeechSynthesisUtterance(textToRead)
       
-      // Try to find a good English voice
+      const languageConfig = INDIAN_LANGUAGES.find((item) => item.code === language)
       const voices = window.speechSynthesis.getVoices()
-      const englishVoice = voices.find(v => v.lang.startsWith('en-') && (v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('Daniel'))) || voices.find(v => v.lang.startsWith('en-'))
+      const baseLocale = languageConfig?.locale || 'en-IN'
+      const matchingVoice = voices.find((voice) => voice.lang.toLowerCase().startsWith(baseLocale.slice(0, 2).toLowerCase()))
       
-      if (englishVoice) {
-        utterance.voice = englishVoice
+      if (matchingVoice) {
+        utterance.voice = matchingVoice
+        utterance.lang = matchingVoice.lang
+      } else {
+        utterance.lang = baseLocale
       }
 
       utterance.rate = 0.95
@@ -305,6 +356,8 @@ function GeneratorPage({
   onRetrySuggestions,
   onCopy,
   onDownload,
+  onTranslate,
+  translating,
 }) {
   const [viewMode, setViewMode] = useState('text')
   const hasScript = Boolean(script)
@@ -412,6 +465,17 @@ function GeneratorPage({
                 ))}
               </select>
             </label>
+
+            <label className="field">
+              <span>Screenplay Language</span>
+              <select name="language" value={form.language} onChange={onFormChange}>
+                {INDIAN_LANGUAGES.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <button className="primary-button" type="submit" disabled={loading}>
@@ -443,6 +507,16 @@ function GeneratorPage({
                   onClick={() => setViewMode((current) => current === 'text' ? 'directions' : 'text')}
                 >
                   {viewMode === 'text' ? 'View Camera & Location' : 'View Text Script'}
+                </button>
+              )}
+              {hasScript && (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={onTranslate}
+                  disabled={translating}
+                >
+                  {translating ? 'Translating…' : 'Translate Script'}
                 </button>
               )}
               <button
@@ -497,6 +571,7 @@ function GeneratorPage({
                         scene={scene}
                         index={index}
                         direction={direction}
+                        language={form.language}
                       />
                     )
                   }) : (
@@ -552,6 +627,7 @@ function HistoryPage({ history, onReuse }) {
                     <span>{formatGenres(entry.genres || entry.genre)}</span>
                     <span>{entry.tone}</span>
                     <span>{entry.scenes} scenes</span>
+                    <span>{INDIAN_LANGUAGES.find((language) => language.code === (entry.language || 'en'))?.name || 'English'}</span>
                   </div>
                 </div>
 
@@ -597,6 +673,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [translating, setTranslating] = useState(false)
   const [history, setHistory] = useState([])
   const suggestionsRequestRef = useRef(0)
 
@@ -641,14 +718,14 @@ function App() {
     }))
   }
 
-  const loadSceneSuggestions = async (targetScript) => {
+  const loadSceneSuggestions = async (targetScript, language = form.language) => {
     const requestId = suggestionsRequestRef.current + 1
     suggestionsRequestRef.current = requestId
     setSuggestions([])
     setSuggestionsError('')
     setSuggestionsLoading(true)
     try {
-      const generatedSuggestions = await generateSceneDirections(targetScript)
+      const generatedSuggestions = await generateSceneDirections(targetScript, language)
       if (requestId === suggestionsRequestRef.current) {
         setSuggestions(generatedSuggestions)
       }
@@ -717,6 +794,33 @@ function App() {
     }
   }
 
+  const handleTranslate = async () => {
+    if (!script) return
+
+    setTranslating(true)
+    setError('')
+    try {
+      const translatedScript = await translateScreenplay(script, form.language)
+      setScript(translatedScript)
+      setHistory((currentHistory) => [
+        {
+          id: crypto.randomUUID(),
+          title: currentTitle,
+          ...form,
+          genres: normalizeGenres(form.genres),
+          script: translatedScript,
+          createdAt: Date.now(),
+        },
+        ...currentHistory,
+      ].slice(0, 12))
+      void loadSceneSuggestions(translatedScript)
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to translate the screenplay.')
+    } finally {
+      setTranslating(false)
+    }
+  }
+
   const handleDownload = () => {
     if (!script) {
       return
@@ -731,9 +835,10 @@ function App() {
       genres: normalizeGenres(entry.genres || entry.genre).length ? normalizeGenres(entry.genres || entry.genre) : ['Drama'],
       tone: entry.tone,
       scenes: entry.scenes,
+      language: entry.language || 'en',
     })
     setScript(entry.script)
-    void loadSceneSuggestions(entry.script)
+    void loadSceneSuggestions(entry.script, entry.language || 'en')
     setCopied(false)
     setError('')
   }
@@ -775,6 +880,8 @@ function App() {
               onRetrySuggestions={() => void loadSceneSuggestions(script)}
               onCopy={handleCopy}
               onDownload={handleDownload}
+              onTranslate={handleTranslate}
+              translating={translating}
             />
           }
         />
