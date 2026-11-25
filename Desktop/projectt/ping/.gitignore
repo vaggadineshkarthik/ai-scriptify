@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 .env
+.env.*
+!.env.example
+server/data/
+*.code-workspace
 
 # Development scripts and test outputs
 generateImage.js

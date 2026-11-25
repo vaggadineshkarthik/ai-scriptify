@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useNavigate } from 'react-router-dom'
 import { jsPDF } from 'jspdf'
 import './App.css'
+
+const RecruitmentHub = lazy(() => import('./recruitment/RecruitmentHub'))
 
 const GENRES = ['Drama', 'Comedy', 'Thriller', 'Sci-Fi', 'Romance', 'Horror']
 const TONES = ['Dark', 'Light', 'Neutral']
@@ -10,7 +12,7 @@ const STORAGE_KEY = 'ai-scriptify-history'
 
 const initialForm = {
   idea: '',
-  genre: 'Drama',
+  genres: ['Drama'],
   tone: 'Neutral',
   scenes: 3,
 }
@@ -22,11 +24,32 @@ function formatDate(timestamp) {
   }).format(new Date(timestamp))
 }
 
-function buildPrompt({ idea, genre, tone, scenes }) {
+function normalizeGenres(genres) {
+  if (Array.isArray(genres)) {
+    return genres.filter(Boolean)
+  }
+
+  if (typeof genres === 'string' && genres.trim()) {
+    return [genres.trim()]
+  }
+
+  return []
+}
+
+function formatGenres(genres) {
+  const normalizedGenres = normalizeGenres(genres)
+  return normalizedGenres.join(', ')
+}
+
+function hasGenre(genres, genre) {
+  return normalizeGenres(genres).includes(genre)
+}
+
+function buildPrompt({ idea, genres, tone, scenes }) {
   return `Write a professional short screenplay based on the following details.
 
 Story idea: ${idea}
-Genre: ${genre}
+Genres: ${formatGenres(genres)}
 Tone: ${tone}
 Number of scenes: ${scenes}
 
@@ -62,87 +85,71 @@ function parseScenes(script) {
   return scenes;
 }
 
-function inferSceneKeywords(scene) {
-  const text = `${scene.title || ''} ${scene.text || ''}`.toLowerCase()
+async function requestOpenRouter(messages, temperature) {
+  const response = await fetch('/api/openrouter', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, temperature }),
+  })
 
-  return {
-    text,
-    isInterior: text.includes('int.'),
-    isExterior: text.includes('ext.'),
-    isNight: text.includes('night') || text.includes('midnight') || text.includes('moon') || text.includes('dark'),
-    isDay: text.includes('day') || text.includes('sunrise') || text.includes('morning') || text.includes('afternoon'),
-    isRainy: text.includes('rain') || text.includes('storm') || text.includes('thunder') || text.includes('wet'),
-    isUrban: text.includes('city') || text.includes('street') || text.includes('alley') || text.includes('neon') || text.includes('downtown'),
-    isNature: text.includes('forest') || text.includes('mountain') || text.includes('beach') || text.includes('river') || text.includes('field'),
-    isSciFi: text.includes('future') || text.includes('robot') || text.includes('cyber') || text.includes('space') || text.includes('alien') || text.includes('hologram'),
-    isRomantic: text.includes('love') || text.includes('kiss') || text.includes('embrace') || text.includes('tender'),
-    isTense: text.includes('gun') || text.includes('knife') || text.includes('run') || text.includes('escape') || text.includes('fear') || text.includes('murder'),
-    isDialogueHeavy: text.includes('says') || text.includes('asks') || text.includes('whispers') || text.includes('dialogue') || text.includes('replies'),
+  let data
+  try {
+    data = await response.json()
+  } catch {
+    throw new Error('The AI service returned an invalid response.')
   }
+
+  if (!response.ok) {
+    const message = typeof data?.error === 'string'
+      ? data.error
+      : data?.error?.message
+    throw new Error(message || `OpenRouter request failed with status ${response.status}.`)
+  }
+  return data
 }
 
-function buildSceneSuggestions(scene, tone, genre) {
-  const keywords = inferSceneKeywords(scene)
-  const title = scene.title || 'Scene'
+async function generateSceneDirections(script) {
+  const data = await requestOpenRouter([
+    {
+      role: 'system',
+      content: 'You are a film director and location scout. Analyze the screenplay and return only valid JSON with this shape: {"scenes":[{"scene_heading":"exact screenplay scene heading","location_suggestion":"specific practical location suggestion with relevant atmosphere","camera_angles":["specific camera angle and movement tied to a story beat","another specific camera angle tied to a story beat"]}]}. Include one item for each screenplay scene, in screenplay order. Base every suggestion on the actual scene content. Do not include markdown or extra keys.',
+    },
+    { role: 'user', content: script },
+  ], 0.6)
 
-  const location = keywords.isExterior
-    ? keywords.isUrban
-      ? keywords.isNight
-        ? 'Exterior city location with visible depth, practical lights, and layered street activity'
-        : 'Exterior urban location with strong foreground, midground, and background separation'
-      : keywords.isNature
-        ? 'Exterior natural location with clear horizon lines and environmental texture'
-        : 'Exterior location with depth, movement in the background, and space for wide framing'
-    : keywords.isSciFi
-      ? 'Interior futuristic set with glowing practicals, reflective surfaces, and layered screens'
-      : keywords.isRomantic
-        ? 'Interior intimate location with warm practical lighting and soft decor details'
-        : 'Interior controlled location with strong production design details and visual depth'
-
-  const background = keywords.isRainy
-    ? 'Use rain reflections, drifting mist, and moving practical light sources in the background'
-    : keywords.isNight
-      ? 'Use low-key lighting, practical lamps, silhouettes, and distant light texture in the background'
-      : keywords.isDay
-        ? 'Use natural daylight, soft atmospheric depth, and subtle environmental movement in the background'
-      : keywords.isSciFi
-        ? 'Use holographic panels, moving light strips, and layered futuristic props in the background'
-        : keywords.isNature
-          ? 'Use trees, sky depth, wind movement, and textured terrain in the background'
-          : 'Use layered production design, foreground objects, and ambient motion in the background'
-
-  const cameraAngles = [
-    keywords.isTense
-      ? `Open ${title} with a wide establishing shot, then switch to a low-angle tracking shot to raise tension`
-      : `Open ${title} with a wide establishing shot to define geography and tone`,
-    keywords.isDialogueHeavy
-      ? 'Use over-the-shoulder coverage and alternating medium close-ups during dialogue beats'
-      : 'Use a medium profile shot to hold character movement and blocking clearly',
-    keywords.isSciFi
-      ? 'Add a slow orbit or Dutch-tilted insert for futuristic reveals and tech moments'
-      : keywords.isRomantic
-        ? 'Use soft eye-level close-ups to highlight emotional reactions'
-        : 'Add a close-up insert for the key prop, expression, or turning-point detail',
-  ]
-
-  const zoomSuggestions = [
-    keywords.isDialogueHeavy
-      ? 'Start on a medium two-shot and apply a slow push-in during the most important line'
-      : 'Begin wide, then use a slow zoom-in as the scene reveals its emotional focus',
-    keywords.isTense
-      ? 'Use a fast punch-in on the reveal, threat, or sudden realization'
-      : 'Use a gentle punch-in only on the strongest reaction beat',
-    tone === 'Light' || genre === 'Comedy'
-      ? 'Favor lighter zoom pacing and avoid aggressive crash zooms unless it supports a joke'
-      : 'End with a tighter frame to intensify the final beat before cutting away',
-  ]
-
-  return {
-    location,
-    background,
-    cameraAngles,
-    zoomSuggestions,
+  const content = data?.choices?.[0]?.message?.content?.trim()
+  if (!content) {
+    throw new Error('OpenRouter returned no camera or location suggestions.')
   }
+
+  const jsonMatch = content.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) {
+    throw new Error('OpenRouter returned camera and location suggestions in an unexpected format.')
+  }
+
+  let parsed
+  try {
+    parsed = JSON.parse(jsonMatch[0])
+  } catch {
+    throw new Error('OpenRouter returned invalid JSON for camera and location suggestions.')
+  }
+
+  if (!Array.isArray(parsed.scenes) || !parsed.scenes.length) {
+    throw new Error('OpenRouter did not return suggestions for any screenplay scenes.')
+  }
+
+  return parsed.scenes.map((scene) => {
+    if (
+      typeof scene?.scene_heading !== 'string' ||
+      typeof scene?.location_suggestion !== 'string' ||
+      !Array.isArray(scene?.camera_angles) ||
+      !scene.camera_angles.every((angle) => typeof angle === 'string')
+    ) {
+      throw new Error('OpenRouter returned an incomplete scene suggestion.')
+    }
+
+    return scene
+  })
 }
 
 function downloadScriptPdf(title, script) {
@@ -191,350 +198,10 @@ function downloadScriptPdf(title, script) {
   pdf.save(`${title.toLowerCase().replace(/[^a-z0-9]+/gi, '-') || 'ai-scriptify-script'}.pdf`)
 }
 
-const BGM_EVENT_NAME = 'ai-scriptify-bgm-active'
-let activeBgmSession = null
-
-function stopActiveBgm() {
-  if (!activeBgmSession) return
-  const stop = activeBgmSession.stop
-  activeBgmSession = null
-  window.dispatchEvent(new CustomEvent(BGM_EVENT_NAME, { detail: { token: null } }))
-  stop()
-}
-
-function pickBgmProfile({ text, tone, genre }) {
-  const lower = (text || '').toLowerCase()
-  const hasAny = (terms) => terms.some((term) => lower.includes(term))
-
-  const horrorTerms = ['blood', 'scream', 'ghost', 'haunt', 'demon', 'curse', 'terror', 'knife', 'murder', 'grave', 'dark']
-  const thrillerTerms = ['chase', 'escape', 'gun', 'knife', 'hostage', 'threat', 'murder', 'mystery', 'secret', 'surveil', 'danger']
-  const romanceTerms = ['love', 'kiss', 'heart', 'tender', 'soft', 'embrace', 'warm', 'promise']
-  const comedyTerms = ['laugh', 'joke', 'funny', 'awkward', 'silly', 'oops', 'prank']
-  const scifiTerms = ['space', 'alien', 'cyber', 'robot', 'ai', 'neon', 'quantum', 'hologram', 'starship', 'futur']
-
-  const inferredHorror = genre === 'Horror' || hasAny(horrorTerms)
-  const inferredThriller = genre === 'Thriller' || hasAny(thrillerTerms)
-  const inferredComedy = genre === 'Comedy' || hasAny(comedyTerms)
-  const inferredRomance = genre === 'Romance' || hasAny(romanceTerms)
-  const inferredSciFi = genre === 'Sci-Fi' || hasAny(scifiTerms)
-
-  const darkPreference = tone === 'Dark' || inferredHorror || inferredThriller
-  const lightPreference = tone === 'Light' || inferredComedy || inferredRomance
-
-  const tempoBpm = inferredComedy ? 128 : inferredThriller ? 108 : inferredHorror ? 86 : inferredRomance ? 96 : inferredSciFi ? 112 : darkPreference ? 92 : 104
-  const brightnessHz = inferredHorror ? 900 : inferredThriller ? 1200 : inferredSciFi ? 2400 : inferredRomance ? 2600 : inferredComedy ? 3200 : darkPreference ? 1400 : 2200
-  const noiseAmount = inferredHorror ? 0.1 : inferredThriller ? 0.06 : 0
-
-  const mode = inferredSciFi ? 'lydian' : darkPreference ? 'minor' : lightPreference ? 'major' : 'minor'
-  const baseMidi = inferredHorror ? 45 : inferredThriller ? 48 : inferredRomance ? 55 : inferredComedy ? 57 : inferredSciFi ? 52 : 50
-
-  return { tempoBpm, brightnessHz, noiseAmount, mode, baseMidi }
-}
-
-function midiToFrequency(midiNote) {
-  return 440 * Math.pow(2, (midiNote - 69) / 12)
-}
-
-function startGeneratedBgm({ text, tone, genre, token }) {
-  const AudioContextCtor = window.AudioContext || window.webkitAudioContext
-  if (!AudioContextCtor) {
-    throw new Error('Web Audio is not supported in this browser.')
-  }
-
-  stopActiveBgm()
-
-  const profile = pickBgmProfile({ text, tone, genre })
-  const ctx = new AudioContextCtor()
-
-  const masterGain = ctx.createGain()
-  masterGain.gain.value = 0.0001
-
-  const compressor = ctx.createDynamicsCompressor()
-  compressor.threshold.value = -20
-  compressor.knee.value = 24
-  compressor.ratio.value = 6
-  compressor.attack.value = 0.01
-  compressor.release.value = 0.18
-
-  const lowpass = ctx.createBiquadFilter()
-  lowpass.type = 'lowpass'
-  lowpass.frequency.value = profile.brightnessHz
-  lowpass.Q.value = 0.6
-
-  lowpass.connect(compressor)
-  compressor.connect(masterGain)
-  masterGain.connect(ctx.destination)
-
-  const stopFns = []
-  const intervalIds = []
-
-  const padGain = ctx.createGain()
-  padGain.gain.value = 0.22
-  padGain.connect(lowpass)
-
-  const padOscillators = Array.from({ length: 3 }, (_, index) => {
-    const osc = ctx.createOscillator()
-    osc.type = index === 0 ? 'sawtooth' : 'triangle'
-    osc.detune.value = index === 1 ? -9 : index === 2 ? 7 : 0
-
-    const gain = ctx.createGain()
-    gain.gain.value = 0.26
-    osc.connect(gain)
-    gain.connect(padGain)
-    return { osc, gain }
-  })
-
-  const scaleSteps = profile.mode === 'lydian'
-    ? [0, 2, 4, 6, 7, 9, 11]
-    : profile.mode === 'major'
-      ? [0, 2, 4, 7, 9]
-      : [0, 3, 5, 7, 10]
-
-  const progression = profile.mode === 'major'
-    ? [0, 7, 9, 4]
-    : profile.mode === 'lydian'
-      ? [0, 6, 7, 2]
-      : [0, 8, 3, 10]
-
-  const chordIntervals = profile.mode === 'major'
-    ? [0, 4, 7]
-    : profile.mode === 'lydian'
-      ? [0, 4, 6]
-      : [0, 3, 7]
-
-  const beatSeconds = 60 / profile.tempoBpm
-  const barSeconds = beatSeconds * 4
-
-  let chordIndex = 0
-  const applyChord = (time) => {
-    const root = profile.baseMidi + progression[chordIndex % progression.length]
-    const chordNotes = chordIntervals.map((interval) => root + interval)
-
-    padOscillators.forEach((entry, oscillatorIndex) => {
-      const targetMidi = chordNotes[oscillatorIndex % chordNotes.length] + (oscillatorIndex === 2 ? 12 : 0)
-      const targetFrequency = midiToFrequency(targetMidi)
-      entry.osc.frequency.cancelScheduledValues(time)
-      entry.osc.frequency.setValueAtTime(entry.osc.frequency.value || targetFrequency, time)
-      entry.osc.frequency.linearRampToValueAtTime(targetFrequency, time + 0.08)
-    })
-    chordIndex += 1
-  }
-
-  const now = ctx.currentTime
-  applyChord(now + 0.02)
-  padOscillators.forEach(({ osc }) => osc.start())
-  stopFns.push(() => padOscillators.forEach(({ osc }) => osc.stop()))
-
-  const chordIntervalId = window.setInterval(() => {
-    applyChord(ctx.currentTime + 0.02)
-  }, Math.max(400, Math.round(barSeconds * 1000)))
-  intervalIds.push(chordIntervalId)
-
-  const leadGain = ctx.createGain()
-  leadGain.gain.value = 0.16
-  leadGain.connect(lowpass)
-
-  let arpStep = 0
-  const arpeggioIntervalId = window.setInterval(() => {
-    const time = ctx.currentTime + 0.02
-    const root = profile.baseMidi + progression[(chordIndex - 1 + progression.length) % progression.length]
-    const note = root + scaleSteps[arpStep % scaleSteps.length] + (arpStep % 2 === 0 ? 12 : 0)
-    const frequency = midiToFrequency(note)
-
-    const osc = ctx.createOscillator()
-    osc.type = profile.mode === 'major' ? 'sine' : 'triangle'
-    osc.frequency.value = frequency
-
-    const gain = ctx.createGain()
-    gain.gain.setValueAtTime(0.0001, time)
-    gain.gain.linearRampToValueAtTime(0.18, time + 0.02)
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + beatSeconds * 0.75)
-
-    osc.connect(gain)
-    gain.connect(leadGain)
-    osc.start(time)
-    osc.stop(time + beatSeconds * 0.8)
-    arpStep += 1
-  }, Math.max(140, Math.round((beatSeconds / 2) * 1000)))
-  intervalIds.push(arpeggioIntervalId)
-
-  if (profile.noiseAmount > 0) {
-    const bufferDurationSeconds = 2
-    const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * bufferDurationSeconds), ctx.sampleRate)
-    const channel = buffer.getChannelData(0)
-    for (let i = 0; i < channel.length; i += 1) {
-      channel[i] = (Math.random() * 2 - 1) * 0.4
-    }
-
-    const source = ctx.createBufferSource()
-    source.buffer = buffer
-    source.loop = true
-
-    const bandpass = ctx.createBiquadFilter()
-    bandpass.type = 'bandpass'
-    bandpass.frequency.value = 420
-    bandpass.Q.value = 0.8
-
-    const noiseGain = ctx.createGain()
-    noiseGain.gain.value = profile.noiseAmount
-
-    source.connect(bandpass)
-    bandpass.connect(noiseGain)
-    noiseGain.connect(lowpass)
-    source.start()
-    stopFns.push(() => source.stop())
-  }
-
-  masterGain.gain.setValueAtTime(0.0001, now)
-  masterGain.gain.exponentialRampToValueAtTime(0.22, now + 0.18)
-
-  const stop = () => {
-    intervalIds.forEach((id) => window.clearInterval(id))
-    const stopTime = ctx.currentTime + 0.02
-    masterGain.gain.cancelScheduledValues(stopTime)
-    masterGain.gain.setValueAtTime(Math.max(0.0001, masterGain.gain.value), stopTime)
-    masterGain.gain.exponentialRampToValueAtTime(0.0001, stopTime + 0.2)
-
-    window.setTimeout(() => {
-      stopFns.forEach((fn) => {
-        try {
-          fn()
-        } catch {
-          return
-        }
-      })
-      ctx.close().catch(() => undefined)
-    }, 350)
-  }
-
-  activeBgmSession = { token, stop }
-  window.dispatchEvent(new CustomEvent(BGM_EVENT_NAME, { detail: { token } }))
-
-  return stop
-}
-
-function BgmButton({ text, tone, genre, showError = true }) {
-  const [isPlaying, setIsPlaying] = useState(false)
-  const [error, setError] = useState('')
-  const tokenRef = useRef(null)
-
-  useEffect(() => {
-    const handler = (event) => {
-      const token = event?.detail?.token || null
-      if (!token || token !== tokenRef.current) {
-        setIsPlaying(false)
-      }
-    }
-
-    window.addEventListener(BGM_EVENT_NAME, handler)
-    return () => window.removeEventListener(BGM_EVENT_NAME, handler)
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      if (activeBgmSession?.token && activeBgmSession.token === tokenRef.current) {
-        stopActiveBgm()
-      }
-    }
-  }, [])
-
-  const handleToggle = async () => {
-    if (isPlaying) {
-      stopActiveBgm()
-      tokenRef.current = null
-      setIsPlaying(false)
-      return
-    }
-
-    setError('')
-    try {
-      const token = crypto.randomUUID()
-      tokenRef.current = token
-      startGeneratedBgm({ text, tone, genre, token })
-      setIsPlaying(true)
-    } catch (err) {
-      setError(err.message || 'Unable to play background music.')
-      setIsPlaying(false)
-      tokenRef.current = null
-    }
-  }
-
-  return (
-    <>
-      <button type="button" className="secondary-button" onClick={handleToggle}>
-        {isPlaying ? 'Stop BGM' : 'Play BGM'}
-      </button>
-      {showError && error ? <p className="status-message error-message">{error}</p> : null}
-    </>
-  )
-}
-
-function SceneMedia({ scene, index, tone, genre }) {
+function SceneDirectionCard({ scene, index, direction }) {
   const [audioLoading, setAudioLoading] = useState(false)
   const [audioError, setAudioError] = useState('')
   const [isPlaying, setIsPlaying] = useState(false)
-  const [imageUrl, setImageUrl] = useState('')
-  const [imageLoading, setImageLoading] = useState(true)
-  const [showSuggestions, setShowSuggestions] = useState(false)
-  const suggestions = useMemo(() => buildSceneSuggestions(scene, tone, genre), [scene, tone, genre])
-
-  useEffect(() => {
-    let isMounted = true;
-    const fetchImage = async () => {
-      setImageLoading(true);
-      try {
-        const pixazoKey = import.meta.env.VITE_PIXAZO_API_KEY;
-        const promptText = `Cinematic still frame, ${scene.title || 'Scene'}, highly detailed, dramatic lighting, 8k resolution, photorealistic. ${scene.text.substring(0, 150).replace(/\n/g, ' ')}`;
-        if (!pixazoKey) {
-          throw new Error('Missing Pixazo API key');
-        }
-
-        const response = await fetch('https://gateway.pixazo.ai/flux-1-schnell/v1/getData', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Ocp-Apim-Subscription-Key': pixazoKey
-          },
-          body: JSON.stringify({
-            prompt: promptText
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error('Image generation failed');
-        }
-
-        const data = await response.json();
-        
-        let returnedImage = '';
-        if (data.output) {
-          returnedImage = data.output;
-        } else if (data.image_url) {
-          returnedImage = data.image_url;
-        } else if (data.data && data.data.length > 0 && data.data[0].url) {
-          returnedImage = data.data[0].url;
-        } else if (data.images && data.images.length > 0) {
-          returnedImage = data.images[0].startsWith('http') ? data.images[0] : `data:image/png;base64,${data.images[0]}`;
-        }
-
-        if (isMounted && returnedImage) {
-          setImageUrl(returnedImage);
-        }
-      } catch (err) {
-        console.error('Pixazo API error:', err);
-        // Fallback to Pollinations just to allow UI graceful degradation if API call fails
-        if (isMounted) {
-          const fallbackPromptText = `Cinematic still frame, ${scene.title || 'Scene'}. ${scene.text.substring(0, 50).replace(/\n/g, ' ')}`;
-          setImageUrl(`https://image.pollinations.ai/prompt/${encodeURIComponent(fallbackPromptText)}`);
-        }
-      } finally {
-        if (isMounted) setImageLoading(false);
-      }
-    };
-    fetchImage();
-
-    return () => { isMounted = false; };
-  }, [scene.title, scene.text]);
 
   const handleGenerateAudio = async () => {
     if (isPlaying) {
@@ -587,87 +254,62 @@ function SceneMedia({ scene, index, tone, genre }) {
   }
 
   return (
-    <div className="scene-media-card">
-      <div className="scene-media-image-container">
-        {imageLoading ? (
-          <div className="image-loading-placeholder" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', minHeight: '200px', backgroundColor: '#1a1a1a', color: '#888', borderRadius: '12px' }}>
-            <span className="spinner" style={{ marginRight: '8px' }}></span> Generating Image...
+    <article className="scene-direction-card">
+      <div className="scene-direction-content">
+        <div className="scene-direction-header">
+          <div>
+            <span className="scene-direction-index">Scene {index + 1}</span>
+            <h3>{direction?.scene_heading || scene.title || `Scene ${index + 1}`}</h3>
           </div>
-        ) : (
-          <img 
-            src={imageUrl} 
-            alt={`Scene ${index + 1}`} 
-            className="scene-media-image" 
-            loading="lazy" 
-          />
-        )}
-      </div>
-      <div className="scene-media-content">
-        <div className="scene-media-audio-actions">
-          <button 
-            type="button" 
-            className="secondary-button" 
-            onClick={handleGenerateAudio}
-            disabled={audioLoading}
-          >
-            {isPlaying ? 'Stop Audio' : 'Play Scene Audio (Browser TTS)'}
-          </button>
-          <BgmButton text={`${scene.title}\n${scene.text}`} tone={tone} genre={genre} />
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => setShowSuggestions((current) => !current)}
-          >
-            {showSuggestions ? 'Hide Suggestions' : 'Show Suggestions'}
-          </button>
-          {audioError && <p className="status-message error-message">{audioError}</p>}
+          <div className="scene-direction-audio-actions">
+            <button type="button" className="secondary-button" onClick={handleGenerateAudio} disabled={audioLoading}>
+              {audioLoading ? 'Preparing audio…' : isPlaying ? 'Stop Audio' : 'Play Scene Audio'}
+            </button>
+          </div>
         </div>
-        {showSuggestions ? (
-          <section className="scene-suggestions-panel">
-            <h3>Shot Suggestions</h3>
-            <div className="scene-suggestions-grid">
-              <article className="scene-suggestion-card">
-                <span>Background</span>
-                <p>{suggestions.background}</p>
-              </article>
-              <article className="scene-suggestion-card">
-                <span>Location</span>
-                <p>{suggestions.location}</p>
-              </article>
-              <article className="scene-suggestion-card">
-                <span>Camera Angles</span>
-                <p>{suggestions.cameraAngles.join(' ')}</p>
-              </article>
-              <article className="scene-suggestion-card">
-                <span>Zoom</span>
-                <p>{suggestions.zoomSuggestions.join(' ')}</p>
-              </article>
-            </div>
-          </section>
-        ) : null}
-        <pre className="scene-media-text">
+        {audioError && <p className="status-message error-message">{audioError}</p>}
+        <section className="scene-suggestions-panel">
+          <div className="scene-suggestions-grid">
+            <article className="scene-suggestion-card">
+              <span>Location</span>
+              <p>{direction?.location_suggestion || 'No location suggestion was returned for this scene.'}</p>
+            </article>
+            <article className="scene-suggestion-card">
+              <span>Camera Angles</span>
+              {direction?.camera_angles?.length ? (
+                <ul>{direction.camera_angles.map((angle, angleIndex) => <li key={`${angleIndex}-${angle}`}>{angle}</li>)}</ul>
+              ) : <p>No camera angles were returned for this scene.</p>}
+            </article>
+          </div>
+        </section>
+        <pre className="scene-direction-script">
           {scene.title && <strong>{scene.title}{'\n'}</strong>}
           {scene.text}
         </pre>
       </div>
-    </div>
+    </article>
   )
 }
 
 function GeneratorPage({
   form,
   script,
+  suggestions,
+  suggestionsLoading,
+  suggestionsError,
   loading,
   error,
   copied,
   onFormChange,
   onGenerate,
+  onRetrySuggestions,
   onCopy,
   onDownload,
 }) {
-  const [viewMode, setViewMode] = useState('text') // 'text' | 'media'
+  const [viewMode, setViewMode] = useState('text')
   const hasScript = Boolean(script)
   const scenes = useMemo(() => parseScenes(script), [script])
+  const screenplayScenes = scenes.filter((scene) => scene.title)
 
   return (
     <div className="page-shell">
@@ -707,13 +349,46 @@ function GeneratorPage({
           <div className="field-grid">
             <label className="field">
               <span>Genre</span>
-              <select name="genre" value={form.genre} onChange={onFormChange}>
+              <select
+                name="genrePick"
+                value=""
+                onChange={(event) => {
+                  const nextGenre = event.target.value
+                  if (!nextGenre) return
+                  onFormChange({
+                    target: { name: 'genres', value: Array.from(new Set([...normalizeGenres(form.genres), nextGenre])) },
+                  })
+                }}
+              >
+                <option value="" disabled>
+                  Select genre…
+                </option>
                 {GENRES.map((genre) => (
-                  <option key={genre} value={genre}>
+                  <option key={genre} value={genre} disabled={hasGenre(form.genres, genre)}>
                     {genre}
                   </option>
                 ))}
               </select>
+              {normalizeGenres(form.genres).length ? (
+                <div className="genre-chip-row">
+                  {normalizeGenres(form.genres).map((genre) => (
+                    <span key={genre} className="genre-chip">
+                      {genre}
+                      <button
+                        type="button"
+                        className="genre-chip-remove"
+                        onClick={() => {
+                          const nextGenres = normalizeGenres(form.genres).filter((item) => item !== genre)
+                          onFormChange({ target: { name: 'genres', value: nextGenres.length ? nextGenres : ['Drama'] } })
+                        }}
+                        aria-label={`Remove ${genre}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </label>
 
             <label className="field">
@@ -765,12 +440,11 @@ function GeneratorPage({
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={() => setViewMode(v => v === 'text' ? 'media' : 'text')}
+                  onClick={() => setViewMode((current) => current === 'text' ? 'directions' : 'text')}
                 >
-                  {viewMode === 'text' ? 'View Media Storyboard' : 'View Text Script'}
+                  {viewMode === 'text' ? 'View Camera & Location' : 'View Text Script'}
                 </button>
               )}
-              {hasScript ? <BgmButton text={script} tone={form.tone} genre={form.genre} showError={false} /> : null}
               <button
                 className="secondary-button"
                 type="button"
@@ -795,10 +469,39 @@ function GeneratorPage({
               viewMode === 'text' ? (
                 <pre>{script}</pre>
               ) : (
-                <div className="media-storyboard">
-                  {scenes.map((scene, index) => (
-                    <SceneMedia key={scene.id} scene={scene} index={index} tone={form.tone} genre={form.genre} />
-                  ))}
+                <div className="scene-direction-list" aria-live="polite">
+                  {suggestionsLoading && (
+                    <p className="scene-directions-status">
+                      <span className="spinner" aria-hidden="true"></span>
+                      Analyzing screenplay for camera and location ideas…
+                    </p>
+                  )}
+                  {suggestionsError && (
+                    <div className="scene-directions-error">
+                      <p className="status-message error-message">{suggestionsError}</p>
+                      <button className="secondary-button" type="button" onClick={onRetrySuggestions} disabled={suggestionsLoading}>
+                        Retry suggestions
+                      </button>
+                    </div>
+                  )}
+                  {!suggestionsLoading && !suggestionsError && !suggestions.length && (
+                    <p className="scene-directions-status">No camera or location suggestions are available yet.</p>
+                  )}
+                  {screenplayScenes.length ? screenplayScenes.map((scene, index) => {
+                    const direction = suggestions.find((item) =>
+                      item.scene_heading?.trim().toLowerCase() === scene.title.trim().toLowerCase(),
+                    ) || suggestions[index]
+                    return (
+                      <SceneDirectionCard
+                        key={scene.id}
+                        scene={scene}
+                        index={index}
+                        direction={direction}
+                      />
+                    )
+                  }) : (
+                    <p className="scene-directions-status">No scene headings were found in this screenplay.</p>
+                  )}
                 </div>
               )
             ) : (
@@ -846,7 +549,7 @@ function HistoryPage({ history, onReuse }) {
                     <p>{formatDate(entry.createdAt)}</p>
                   </div>
                   <div className="history-meta">
-                    <span>{entry.genre}</span>
+                    <span>{formatGenres(entry.genres || entry.genre)}</span>
                     <span>{entry.tone}</span>
                     <span>{entry.scenes} scenes</span>
                   </div>
@@ -888,10 +591,14 @@ function HistoryPage({ history, onReuse }) {
 function App() {
   const [form, setForm] = useState(initialForm)
   const [script, setScript] = useState('')
+  const [suggestions, setSuggestions] = useState([])
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false)
+  const [suggestionsError, setSuggestionsError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [history, setHistory] = useState([])
+  const suggestionsRequestRef = useRef(0)
 
   useEffect(() => {
     const storedHistory = localStorage.getItem(STORAGE_KEY)
@@ -934,13 +641,35 @@ function App() {
     }))
   }
 
+  const loadSceneSuggestions = async (targetScript) => {
+    const requestId = suggestionsRequestRef.current + 1
+    suggestionsRequestRef.current = requestId
+    setSuggestions([])
+    setSuggestionsError('')
+    setSuggestionsLoading(true)
+    try {
+      const generatedSuggestions = await generateSceneDirections(targetScript)
+      if (requestId === suggestionsRequestRef.current) {
+        setSuggestions(generatedSuggestions)
+      }
+    } catch (requestError) {
+      if (requestId === suggestionsRequestRef.current) {
+        setSuggestionsError(requestError.message || 'Unable to generate camera and location suggestions.')
+      }
+    } finally {
+      if (requestId === suggestionsRequestRef.current) {
+        setSuggestionsLoading(false)
+      }
+    }
+  }
+
   const handleGenerate = async (event) => {
     event.preventDefault()
     setCopied(false)
     setError('')
 
-    if (!import.meta.env.VITE_OPENROUTER_API_KEY) {
-      setError('Missing VITE_OPENROUTER_API_KEY. Add it to your environment file and restart Vite.')
+    if (!normalizeGenres(form.genres).length) {
+      setError('Select at least one genre before generating.')
       return
     }
 
@@ -948,26 +677,7 @@ function App() {
 
     try {
       const prompt = buildPrompt(form)
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`,
-          'HTTP-Referer': window.location.href, // Optional, for including your app on openrouter.ai rankings.
-          'X-Title': 'AI Scriptify', // Optional. Shows in rankings on openrouter.ai.
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'meta-llama/llama-3.3-70b-instruct', // Equivalent Llama 3.3 70B model on OpenRouter
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.9,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error(`OpenRouter request failed with status ${response.status}.`)
-      }
-
-      const data = await response.json()
+      const data = await requestOpenRouter([{ role: 'user', content: prompt }], 0.9)
       const generatedScript = data?.choices?.[0]?.message?.content?.trim()
 
       if (!generatedScript) {
@@ -978,12 +688,14 @@ function App() {
         id: crypto.randomUUID(),
         title: currentTitle,
         ...form,
+        genres: normalizeGenres(form.genres),
         script: generatedScript,
         createdAt: Date.now(),
       }
 
       setScript(generatedScript)
       setHistory((currentHistory) => [entry, ...currentHistory].slice(0, 12))
+      void loadSceneSuggestions(generatedScript)
     } catch (requestError) {
       setError(requestError.message || 'Unable to generate a screenplay right now.')
     } finally {
@@ -1016,11 +728,12 @@ function App() {
   const handleReuse = (entry) => {
     setForm({
       idea: entry.idea,
-      genre: entry.genre,
+      genres: normalizeGenres(entry.genres || entry.genre).length ? normalizeGenres(entry.genres || entry.genre) : ['Drama'],
       tone: entry.tone,
       scenes: entry.scenes,
     })
     setScript(entry.script)
+    void loadSceneSuggestions(entry.script)
     setCopied(false)
     setError('')
   }
@@ -1038,6 +751,9 @@ function App() {
           <Link className="nav-link" to="/history">
             History
           </Link>
+          <Link className="nav-link" to="/recruitment">
+            Recruitment
+          </Link>
         </nav>
       </header>
 
@@ -1048,17 +764,29 @@ function App() {
             <GeneratorPage
               form={form}
               script={script}
+              suggestions={suggestions}
+              suggestionsLoading={suggestionsLoading}
+              suggestionsError={suggestionsError}
               loading={loading}
               error={error}
               copied={copied}
               onFormChange={handleFormChange}
               onGenerate={handleGenerate}
+              onRetrySuggestions={() => void loadSceneSuggestions(script)}
               onCopy={handleCopy}
               onDownload={handleDownload}
             />
           }
         />
         <Route path="/history" element={<HistoryPage history={history} onReuse={handleReuse} />} />
+        <Route
+          path="/recruitment/*"
+          element={
+            <Suspense fallback={<div className="page-shell">Loading Recruitment Hub…</div>}>
+              <RecruitmentHub />
+            </Suspense>
+          }
+        />
       </Routes>
     </div>
   )
